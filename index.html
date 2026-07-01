@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover" />
+  <meta name="theme-color" content="#1e1e2e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>PDF 뷰어</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- 상단 툴바 -->
+  <header class="toolbar" id="toolbar">
+    <button class="icon-btn" id="menuBtn" title="목차" aria-label="목차">☰</button>
+    <button class="icon-btn" id="openBtn" title="파일 열기" aria-label="파일 열기">📂</button>
+    <div class="page-indicator">
+      <input type="number" id="pageInput" min="1" value="1" aria-label="페이지 번호" />
+      <span>/</span>
+      <span id="pageCount">0</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="icon-btn" id="searchBtn" title="검색" aria-label="검색">🔍</button>
+    <button class="icon-btn" id="zoomOutBtn" title="축소" aria-label="축소">➖</button>
+    <button class="icon-btn" id="zoomInBtn" title="확대" aria-label="확대">➕</button>
+  </header>
+
+  <!-- 검색 바 -->
+  <div class="search-bar hidden" id="searchBar">
+    <input type="text" id="searchField" placeholder="문서에서 검색..." aria-label="검색어" />
+    <span id="searchStatus" class="search-status"></span>
+    <button class="icon-btn" id="searchPrev" title="이전" aria-label="이전 결과">▲</button>
+    <button class="icon-btn" id="searchNext" title="다음" aria-label="다음 결과">▼</button>
+    <button class="icon-btn" id="searchClose" title="닫기" aria-label="검색 닫기">✕</button>
+  </div>
+
+  <!-- 목차 사이드 패널 -->
+  <aside class="outline-panel hidden" id="outlinePanel">
+    <div class="outline-header">
+      <span>목차</span>
+      <button class="icon-btn" id="outlineClose" aria-label="목차 닫기">✕</button>
+    </div>
+    <div class="outline-content" id="outlineContent"></div>
+  </aside>
+  <div class="backdrop hidden" id="backdrop"></div>
+
+  <!-- 뷰어 영역 -->
+  <main class="viewer" id="viewer">
+    <!-- 초기 안내 화면 -->
+    <div class="welcome" id="welcome">
+      <div class="welcome-icon">📄</div>
+      <h1>PDF 뷰어</h1>
+      <p>PDF 파일을 열어 읽어보세요</p>
+      <button class="primary-btn" id="welcomeOpenBtn">파일 선택</button>
+      <p class="hint">파일을 이 화면으로 끌어다 놓아도 됩니다</p>
+    </div>
+    <!-- 페이지가 그려지는 컨테이너 -->
+    <div class="pages" id="pagesContainer"></div>
+  </main>
+
+  <!-- 로딩 -->
+  <div class="loading hidden" id="loading">
+    <div class="spinner"></div>
+    <span id="loadingText">불러오는 중...</span>
+  </div>
+
+  <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden />
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

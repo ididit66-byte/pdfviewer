@@ -1,0 +1,10 @@
+# 테스트용 샘플 PDF (재배포 안 함)
+sample.pdf
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+*.log
+
+# 노드 (사용 시)
+node_modules/
