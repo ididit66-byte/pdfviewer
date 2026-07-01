@@ -202,21 +202,33 @@ function updateCurrentPageFromScroll() {
   }
 }
 
-// 스와이프로 페이지 넘김 (가로 방향 우세할 때)
-let touchStartX = 0, touchStartY = 0, touchStartT = 0;
+// 스와이프로 페이지 넘김 (확대되지 않은 상태에서 한 손가락 가로 스와이프만)
+let touchStartX = 0, touchStartY = 0, touchStartT = 0, swipeCandidate = false;
 viewer.addEventListener("touchstart", (e) => {
-  if (e.touches.length !== 1) return;
-  touchStartX = e.touches[0].clientX;
-  touchStartY = e.touches[0].clientY;
-  touchStartT = e.timeStamp;
+  if (e.touches.length === 1) {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchStartT = e.timeStamp;
+    // ★ 제스처 "시작" 시점의 확대 상태로 판단.
+    //   확대 중이면 이 제스처는 넘김이 아니라 패닝이므로 후보에서 제외.
+    swipeCandidate = !isZoomed();
+  } else {
+    // 두 손가락 이상(핀치 등)이면 넘김 후보 아님
+    swipeCandidate = false;
+  }
+}, { passive: true });
+viewer.addEventListener("touchmove", (e) => {
+  // 제스처 도중 손가락이 추가되면(핀치로 전환) 넘김 취소
+  if (e.touches.length > 1) swipeCandidate = false;
 }, { passive: true });
 viewer.addEventListener("touchend", (e) => {
+  if (!swipeCandidate) return;
+  swipeCandidate = false;
   const t = e.changedTouches[0];
   const dx = t.clientX - touchStartX;
   const dy = t.clientY - touchStartY;
   const dt = e.timeStamp - touchStartT;
-  // 확대 상태에서는 가로 드래그를 페이지 넘김이 아니라 화면 이동(패닝)으로 사용
-  if (dt < 500 && !isZoomed() && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.8) {
+  if (dt < 500 && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.8) {
     if (dx < 0) goToPage(state.currentPage + 1);
     else goToPage(state.currentPage - 1);
   }
