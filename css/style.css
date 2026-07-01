@@ -163,6 +163,8 @@ html, body {
   left: 0; right: 0; bottom: 0;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y; /* 한 손가락 상하좌우 이동 허용, 핀치는 JS가 처리 */
   background: var(--bg);
 }
 .pages {
@@ -170,8 +172,13 @@ html, body {
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 12px 0;
+  padding: 12px;
+  width: max-content;   /* 확대 시 좌우 오버플로가 잘려 스크롤로 못 가는 문제 방지 */
+  min-width: 100%;
   min-height: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+  transform-origin: 0 0;
 }
 .page-wrap {
   position: relative;

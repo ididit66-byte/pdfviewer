@@ -75,7 +75,7 @@ async function loadPdf(data) {
   pageInput.max = state.numPages;
   pageCount.textContent = state.numPages;
   computeFitScale();
-  await renderAllPages();
+  await renderFresh();
   await buildOutline();
   goToPage(1, false);
 }
@@ -90,18 +90,22 @@ async function computeFitScale() {
   // 첫 페이지 기준으로 화면 너비에 맞는 배율 계산
   const page = await state.pdf.getPage(1);
   const unscaled = page.getViewport({ scale: 1 });
-  const avail = viewer.clientWidth - 16; // 좌우 여백
+  const avail = viewer.clientWidth - 28; // .pages 좌우 패딩(24px) + 약간의 여유
   state.fitScale = Math.max(0.5, avail / unscaled.width);
   state.scale = state.fitScale;
 }
 
-async function renderAllPages() {
+async function renderFresh() {
+  clearPages();
+  const map = new Map();
   for (let n = 1; n <= state.numPages; n++) {
-    await renderPage(n);
+    map.set(n, await buildPage(n, pagesContainer));
   }
+  state.renderedPages = map;
 }
 
-async function renderPage(num) {
+// 한 페이지를 만들어 지정한 컨테이너에 넣고 entry를 반환 (재렌더 시 재사용)
+async function buildPage(num, container) {
   const page = await state.pdf.getPage(num);
   const viewport = page.getViewport({ scale: state.scale });
   const dpr = window.devicePixelRatio || 1;
@@ -126,7 +130,7 @@ async function renderPage(num) {
   textLayer.style.height = viewport.height + "px";
   wrap.appendChild(textLayer);
 
-  pagesContainer.appendChild(wrap);
+  container.appendChild(wrap);
 
   await page.render({
     canvasContext: ctx,
@@ -137,7 +141,7 @@ async function renderPage(num) {
   const textContent = await page.getTextContent();
   const textItems = buildTextLayer(textLayer, textContent, viewport);
 
-  state.renderedPages.set(num, { wrap, canvas, textLayer, textItems, viewport, page });
+  return { wrap, canvas, textLayer, textItems, viewport, page };
 }
 
 // 텍스트 레이어를 수동으로 그려 검색 하이라이트를 지원
@@ -211,52 +215,126 @@ viewer.addEventListener("touchend", (e) => {
   const dx = t.clientX - touchStartX;
   const dy = t.clientY - touchStartY;
   const dt = e.timeStamp - touchStartT;
-  if (dt < 500 && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.8) {
+  // 확대 상태에서는 가로 드래그를 페이지 넘김이 아니라 화면 이동(패닝)으로 사용
+  if (dt < 500 && !isZoomed() && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.8) {
     if (dx < 0) goToPage(state.currentPage + 1);
     else goToPage(state.currentPage - 1);
   }
 }, { passive: true });
 
 // ---------- 확대/축소 ----------
-$("zoomInBtn").addEventListener("click", () => setScale(state.scale * 1.2));
-$("zoomOutBtn").addEventListener("click", () => setScale(state.scale / 1.2));
+$("zoomInBtn").addEventListener("click", () => requestZoom(state.scale * 1.25));
+$("zoomOutBtn").addEventListener("click", () => requestZoom(state.scale / 1.25));
 
-async function setScale(newScale) {
-  if (!state.pdf) return;
-  newScale = Math.max(0.4, Math.min(5, newScale));
-  if (Math.abs(newScale - state.scale) < 0.001) return;
-  state.scale = newScale;
-  const keepPage = state.currentPage;
-  showLoading("배율 조정 중...");
-  clearPages();
-  await renderAllPages();
-  // 검색 중이었다면 하이라이트 복원
-  if (state.search.query) applyHighlights();
-  hideLoading();
-  goToPage(keepPage, false);
+// 화면 맞춤 배율보다 확대된 상태인지 (스와이프 넘김 vs 패닝 판단에 사용)
+function isZoomed() { return state.scale > state.fitScale * 1.02; }
+
+// 확대 요청을 직렬화 — 연속 확대 시 재렌더가 겹치지 않도록
+let zoomBusy = false, zoomPending = null;
+function requestZoom(scale) {
+  zoomPending = Math.max(0.4, Math.min(5, scale));
+  if (zoomBusy) return;
+  runZoomQueue();
+}
+async function runZoomQueue() {
+  zoomBusy = true;
+  try {
+    while (zoomPending != null) {
+      const s = zoomPending;
+      zoomPending = null;
+      await rerenderAt(s);
+    }
+  } finally {
+    zoomBusy = false;
+  }
 }
 
-// 핀치 확대 (두 손가락)
-let pinchStartDist = 0, pinchStartScale = 1;
+// 새 배율로 다시 렌더. 화면 중심을 유지하고, 재렌더 동안에는 CSS 변형으로 즉시 미리보기를 유지해 깜빡임/끊김을 없앰
+async function rerenderAt(newScale) {
+  if (!state.pdf) return;
+  const oldScale = state.scale;
+  if (Math.abs(newScale - oldScale) < 0.001) { clearPreview(); return; }
+  const factor = newScale / oldScale;
+
+  // 화면 중심 기준 즉시 미리보기 (부드러운 반응)
+  const cx = viewer.scrollLeft + viewer.clientWidth / 2;
+  const cy = viewer.scrollTop + viewer.clientHeight / 2;
+  pagesContainer.style.transformOrigin = `${cx}px ${cy}px`;
+  pagesContainer.style.transform = `scale(${factor})`;
+
+  // 재렌더 후 중심을 유지하기 위한 목표 스크롤
+  const targetLeft = cx * factor - viewer.clientWidth / 2;
+  const targetTop = cy * factor - viewer.clientHeight / 2;
+
+  state.scale = newScale;
+
+  // 새 페이지를 화면 밖 프래그먼트에 렌더 → 기존 미리보기는 그대로 유지되어 깜빡임 없음
+  const frag = document.createDocumentFragment();
+  const map = new Map();
+  for (let n = 1; n <= state.numPages; n++) {
+    map.set(n, await buildPage(n, frag));
+  }
+
+  // 교체 후 미리보기 변형 제거
+  clearPreview();
+  pagesContainer.replaceChildren(frag);
+  state.renderedPages = map;
+
+  // 중심 유지 스크롤 복원
+  viewer.scrollLeft = Math.max(0, targetLeft);
+  viewer.scrollTop = Math.max(0, targetTop);
+
+  // 검색 중이었다면 하이라이트 복원
+  if (state.search.query) reapplySearchAfterRender();
+}
+
+function clearPreview() {
+  pagesContainer.style.transform = "";
+  pagesContainer.style.transformOrigin = "";
+}
+
+function reapplySearchAfterRender() {
+  applyHighlights();
+  const n = state.search.matches.length;
+  if (n > 0) {
+    if (state.search.activeIndex < 0 || state.search.activeIndex >= n) state.search.activeIndex = 0;
+    state.search.matches[state.search.activeIndex].mark.classList.add("hl-active");
+  } else {
+    state.search.activeIndex = -1;
+  }
+  updateSearchStatus();
+}
+
+// ---------- 핀치 확대 (두 손가락, 실시간 미리보기) ----------
+let pinchActive = false, pinchStartDist = 0, pinchStartScale = 1, pinchRatio = 1;
 viewer.addEventListener("touchstart", (e) => {
   if (e.touches.length === 2) {
+    pinchActive = true;
     pinchStartDist = touchDist(e.touches);
     pinchStartScale = state.scale;
+    pinchRatio = 1;
+    // 화면 중심을 확대 기준점으로 고정
+    const cx = viewer.scrollLeft + viewer.clientWidth / 2;
+    const cy = viewer.scrollTop + viewer.clientHeight / 2;
+    pagesContainer.style.transformOrigin = `${cx}px ${cy}px`;
   }
 }, { passive: true });
-let pinchPending = null;
 viewer.addEventListener("touchmove", (e) => {
-  if (e.touches.length === 2 && pinchStartDist) {
-    e.preventDefault();
-    const ratio = touchDist(e.touches) / pinchStartDist;
-    pinchPending = pinchStartScale * ratio;
+  if (pinchActive && e.touches.length === 2 && pinchStartDist) {
+    e.preventDefault(); // 브라우저 기본 확대 방지
+    pinchRatio = touchDist(e.touches) / pinchStartDist;
+    // 최종 배율이 허용 범위를 넘지 않도록 미리보기도 제한
+    const clamped = Math.max(0.4, Math.min(5, pinchStartScale * pinchRatio)) / pinchStartScale;
+    pagesContainer.style.transform = `scale(${clamped})`;
   }
 }, { passive: false });
 viewer.addEventListener("touchend", (e) => {
-  if (pinchPending && e.touches.length < 2) {
-    setScale(pinchPending);
-    pinchPending = null;
+  if (pinchActive && e.touches.length < 2) {
+    pinchActive = false;
     pinchStartDist = 0;
+    const target = pinchStartScale * pinchRatio;
+    if (Math.abs(target - state.scale) > 0.005) requestZoom(target);
+    else clearPreview();
   }
 });
 function touchDist(touches) {
