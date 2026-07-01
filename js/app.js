@@ -2,11 +2,113 @@ import * as pdfjsLib from "../vendor/pdf.min.mjs";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "../vendor/pdf.worker.min.mjs";
 
+// ---------- 최근 파일 저장소 (IndexedDB) ----------
+// 웹앱은 파일 경로로 다시 열 수 없으므로 PDF 내용 자체를 기기 내부에 저장한다.
+// meta 스토어(가벼운 목록) + blob 스토어(실제 바이트)로 분리해 목록 조회 시 바이트를 읽지 않는다.
+const DB_NAME = "pdfviewer";
+const DB_VERSION = 1;
+const MAX_RECENTS = 12;             // 최대 보관 개수
+const MAX_STORE_BYTES = 80 * 1024 * 1024; // 이보다 큰 파일은 바이트 저장 생략(목록엔 남기되 재열기 불가)
+
+let dbPromise = null;
+function openDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("blobs")) db.createObjectStore("blobs");
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function idbReq(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function recentsList() {
+  try {
+    const db = await openDB();
+    const tx = db.transaction("meta", "readonly");
+    const all = await idbReq(tx.objectStore("meta").getAll());
+    return all.sort((a, b) => b.savedAt - a.savedAt);
+  } catch (e) {
+    console.warn("최근 목록 조회 실패", e);
+    return [];
+  }
+}
+
+async function recentGetBytes(id) {
+  const db = await openDB();
+  const tx = db.transaction("blobs", "readonly");
+  return idbReq(tx.objectStore("blobs").get(id));
+}
+
+async function recentSave(meta, bytes) {
+  const db = await openDB();
+  // meta + blob 저장
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(["meta", "blobs"], "readwrite");
+    tx.objectStore("meta").put(meta);
+    if (bytes) tx.objectStore("blobs").put(bytes, meta.id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+  // 개수 제한 초과분 정리
+  const list = await recentsList();
+  if (list.length > MAX_RECENTS) {
+    const remove = list.slice(MAX_RECENTS);
+    await Promise.all(remove.map((m) => recentDelete(m.id)));
+  }
+}
+
+async function recentDelete(id) {
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(["meta", "blobs"], "readwrite");
+    tx.objectStore("meta").delete(id);
+    tx.objectStore("blobs").delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function recentClear() {
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(["meta", "blobs"], "readwrite");
+    tx.objectStore("meta").clear();
+    tx.objectStore("blobs").clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function recentUpdatePage(id, page) {
+  if (!id) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction("meta", "readwrite");
+    const store = tx.objectStore("meta");
+    const meta = await idbReq(store.get(id));
+    if (meta) { meta.lastPage = page; store.put(meta); }
+  } catch (e) { /* 무시 */ }
+}
+
 // ---------- 상태 ----------
 const state = {
   pdf: null,
   numPages: 0,
   currentPage: 1,
+  currentFileId: null,    // 현재 열려 있는 파일의 최근목록 id
   scale: 1.2,
   fitScale: 1.2,          // 화면 너비에 맞춘 기본 배율
   renderedPages: new Map(), // pageNum -> { wrap, canvas, textLayer, textItems, viewport }
@@ -56,7 +158,19 @@ async function openFile(file) {
   showLoading("문서를 여는 중...");
   try {
     const buf = await file.arrayBuffer();
-    await loadPdf(buf);
+    const id = `${file.name}__${file.size}__${file.lastModified}`;
+    // 이미 본 적 있으면 마지막 페이지 이어보기
+    let resumePage = 1;
+    try {
+      const db = await openDB();
+      const prev = await idbReq(db.transaction("meta", "readonly").objectStore("meta").get(id));
+      if (prev && prev.lastPage) resumePage = prev.lastPage;
+    } catch { /* 무시 */ }
+
+    // ★ PDF.js에 넘기기 전에 먼저 저장 (getDocument는 ArrayBuffer를 detach 함)
+    await saveRecentFor(id, file, resumePage);
+    state.currentFileId = id;
+    await loadPdf(buf, resumePage);
   } catch (err) {
     alert("PDF를 열 수 없습니다: " + err.message);
     console.error(err);
@@ -65,7 +179,30 @@ async function openFile(file) {
   }
 }
 
-async function loadPdf(data) {
+// 최근목록에 메타 + (가능하면) 바이트 저장
+async function saveRecentFor(id, file, lastPage) {
+  const meta = {
+    id,
+    name: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+    lastPage: lastPage || 1,
+    savedAt: performance.timeOrigin + performance.now(), // Date.now 대체(단조 증가 타임스탬프)
+  };
+  let bytes = null;
+  if (file.size <= MAX_STORE_BYTES) {
+    try { bytes = await file.arrayBuffer(); } catch { bytes = null; }
+  } else {
+    meta.tooLarge = true; // 재열기 불가 표시
+  }
+  try {
+    await recentSave(meta, bytes);
+  } catch (e) {
+    console.warn("최근 파일 저장 실패(용량 초과 등)", e);
+  }
+}
+
+async function loadPdf(data, resumePage = 1) {
   if (state.pdf) { state.pdf.destroy(); }
   clearPages();
   state.pdf = await pdfjsLib.getDocument({ data }).promise;
@@ -77,8 +214,120 @@ async function loadPdf(data) {
   computeFitScale();
   await renderFresh();
   await buildOutline();
-  goToPage(1, false);
+  goToPage(Math.max(1, Math.min(state.numPages, resumePage)), false);
 }
+
+// 최근 목록에서 다시 열기
+async function reopenRecent(id) {
+  showLoading("문서를 여는 중...");
+  try {
+    const bytes = await recentGetBytes(id);
+    if (!bytes) {
+      alert("저장된 파일 데이터가 없어 다시 열 수 없습니다. 파일을 다시 선택해 주세요.");
+      return;
+    }
+    const list = await recentsList();
+    const meta = list.find((m) => m.id === id);
+    state.currentFileId = id;
+    // savedAt 갱신(목록 상단으로)
+    if (meta) { meta.savedAt = performance.timeOrigin + performance.now(); await recentSave(meta, null); }
+    await loadPdf(bytes, meta ? meta.lastPage : 1);
+  } catch (err) {
+    alert("다시 열기 실패: " + err.message);
+    console.error(err);
+  } finally {
+    hideLoading();
+  }
+}
+
+// ---------- 최근 파일 UI ----------
+const recentSection = $("recentSection");
+const recentListEl = $("recentList");
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+function fmtWhen(ts) {
+  const diff = Date.now() - ts;
+  const m = Math.floor(diff / 60000), h = Math.floor(diff / 3600000), d = Math.floor(diff / 86400000);
+  if (m < 1) return "방금 전";
+  if (m < 60) return `${m}분 전`;
+  if (h < 24) return `${h}시간 전`;
+  if (d < 7) return `${d}일 전`;
+  return new Date(ts).toLocaleDateString("ko-KR");
+}
+
+async function renderRecents() {
+  const list = await recentsList();
+  recentListEl.innerHTML = "";
+  if (list.length === 0) { recentSection.classList.add("hidden"); return; }
+  recentSection.classList.remove("hidden");
+  for (const m of list) {
+    const item = document.createElement("div");
+    item.className = "recent-item";
+
+    const thumb = document.createElement("div");
+    thumb.className = "recent-thumb";
+    thumb.textContent = "📄";
+
+    const info = document.createElement("div");
+    info.className = "recent-info";
+    const name = document.createElement("div");
+    name.className = "recent-name";
+    name.textContent = m.name;
+    const meta = document.createElement("div");
+    meta.className = "recent-meta";
+    const pagePart = m.lastPage > 1 ? ` · ${m.lastPage}쪽부터` : "";
+    meta.textContent = `${fmtSize(m.size)} · ${fmtWhen(m.savedAt)}${pagePart}${m.tooLarge ? " · 재열기 불가(용량)" : ""}`;
+    info.appendChild(name);
+    info.appendChild(meta);
+
+    const del = document.createElement("button");
+    del.className = "recent-del";
+    del.textContent = "✕";
+    del.setAttribute("aria-label", "목록에서 삭제");
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await recentDelete(m.id);
+      renderRecents();
+    });
+
+    item.appendChild(thumb);
+    item.appendChild(info);
+    item.appendChild(del);
+    item.addEventListener("click", () => {
+      if (m.tooLarge) { pickFile(); return; } // 용량 초과분은 다시 선택 유도
+      reopenRecent(m.id);
+    });
+    recentListEl.appendChild(item);
+  }
+}
+
+// 시작 화면(최근 목록) 표시
+function showHome() {
+  welcome.classList.remove("hidden");
+  renderRecents();
+}
+$("homeBtn").addEventListener("click", showHome);
+$("clearRecentsBtn").addEventListener("click", async () => {
+  if (confirm("최근 파일 기록을 모두 지울까요?")) {
+    await recentClear();
+    renderRecents();
+  }
+});
+
+// 앱을 벗어나거나 백그라운드로 갈 때 마지막 페이지 확정 저장
+window.addEventListener("pagehide", () => {
+  if (state.currentFileId) recentUpdatePage(state.currentFileId, state.currentPage);
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && state.currentFileId) recentUpdatePage(state.currentFileId, state.currentPage);
+});
+
+// 시작 시 최근 목록 렌더
+renderRecents();
 
 // ---------- 렌더링 ----------
 function clearPages() {
@@ -175,6 +424,15 @@ function goToPage(num, smooth = true) {
   if (entry) {
     entry.wrap.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
   }
+  scheduleSavePage();
+}
+
+// 마지막으로 본 페이지를 최근목록에 저장(디바운스)
+let pageSaveTimer = null;
+function scheduleSavePage() {
+  if (!state.currentFileId) return;
+  clearTimeout(pageSaveTimer);
+  pageSaveTimer = setTimeout(() => recentUpdatePage(state.currentFileId, state.currentPage), 600);
 }
 
 pageInput.addEventListener("change", () => goToPage(parseInt(pageInput.value, 10) || 1));
@@ -199,6 +457,7 @@ function updateCurrentPageFromScroll() {
   if (best !== state.currentPage) {
     state.currentPage = best;
     pageInput.value = best;
+    scheduleSavePage();
   }
 }
 

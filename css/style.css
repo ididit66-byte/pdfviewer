@@ -208,8 +208,9 @@ html, body {
 
 /* ---------- 환영 화면 ---------- */
 .welcome {
-  position: absolute;
-  inset: 0;
+  position: fixed;
+  top: calc(var(--toolbar-h) + env(safe-area-inset-top));
+  left: 0; right: 0; bottom: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -217,6 +218,9 @@ html, body {
   text-align: center;
   padding: 24px;
   gap: 8px;
+  overflow-y: auto;
+  background: var(--bg);  /* 열린 문서 위에 덮일 때 뒤 페이지가 비치거나 클릭이 새지 않도록 */
+  z-index: 20;
 }
 .welcome-icon { font-size: 64px; }
 .welcome h1 { margin: 8px 0 0; font-size: 24px; }
@@ -234,6 +238,83 @@ html, body {
   cursor: pointer;
 }
 .primary-btn:active { filter: brightness(0.9); }
+
+/* ---------- 최근 파일 ---------- */
+.recent-section {
+  width: 100%;
+  max-width: 440px;
+  margin-top: 28px;
+  text-align: left;
+}
+.recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 8px;
+  font-size: 14px;
+  color: var(--fg-dim);
+}
+.text-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+.text-btn:active { background: var(--accent-soft); }
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.recent-item:active { background: var(--accent-soft); }
+.recent-thumb {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+}
+.recent-info { flex: 1; min-width: 0; }
+.recent-name {
+  font-size: 15px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recent-meta {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-top: 2px;
+}
+.recent-del {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 16px;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+.recent-del:active { background: rgba(255,80,80,0.2); color: #ff6b6b; }
 
 /* ---------- 로딩 ---------- */
 .loading {

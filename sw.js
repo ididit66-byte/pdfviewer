@@ -1,5 +1,5 @@
 // PDF 뷰어 서비스 워커 — 오프라인 캐시
-const CACHE = "pdfviewer-v3";
+const CACHE = "pdfviewer-v4";
 const ASSETS = [
   "./",
   "./index.html",

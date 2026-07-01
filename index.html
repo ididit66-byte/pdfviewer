@@ -16,6 +16,7 @@
   <!-- 상단 툴바 -->
   <header class="toolbar" id="toolbar">
     <button class="icon-btn" id="menuBtn" title="목차" aria-label="목차">☰</button>
+    <button class="icon-btn" id="homeBtn" title="최근 파일" aria-label="최근 파일">🏠</button>
     <button class="icon-btn" id="openBtn" title="파일 열기" aria-label="파일 열기">📂</button>
     <div class="page-indicator">
       <input type="number" id="pageInput" min="1" value="1" aria-label="페이지 번호" />
@@ -56,6 +57,14 @@
       <p>PDF 파일을 열어 읽어보세요</p>
       <button class="primary-btn" id="welcomeOpenBtn">파일 선택</button>
       <p class="hint">파일을 이 화면으로 끌어다 놓아도 됩니다</p>
+
+      <section class="recent-section hidden" id="recentSection">
+        <div class="recent-head">
+          <span>최근 파일</span>
+          <button class="text-btn" id="clearRecentsBtn">전체 지우기</button>
+        </div>
+        <div class="recent-list" id="recentList"></div>
+      </section>
     </div>
     <!-- 페이지가 그려지는 컨테이너 -->
     <div class="pages" id="pagesContainer"></div>
